@@ -33,6 +33,8 @@ source .venv/bin/activate
 # Install Python dependencies
 echo "Installing Python dependencies..."
 uv pip install --upgrade pip
+# Install sentencepiece first (needed for Mistral tokenizer)
+uv pip install sentencepiece>=0.1.99 protobuf>=3.20.0
 uv pip install -r /workspace/runpod/requirements.txt
 
 # Verify CUDA/GPU availability
