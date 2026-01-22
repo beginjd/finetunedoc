@@ -188,30 +188,41 @@ def main():
     )
     
     # Create trainer
-    # In TRL 0.7.0+, tokenizer is inferred from model
-    # Ensure tokenizer is accessible via model
-    if not hasattr(model, 'tokenizer'):
-        model.tokenizer = tokenizer
+    # Tokenize the dataset first to avoid SFTTrainer API issues
+    print(f"Tokenizing datasets with max_seq_length={max_seq_length}...")
+    def tokenize_function(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=max_seq_length,
+            padding="max_length",
+        )
+        # Add labels for language modeling (labels = input_ids)
+        tokenized["labels"] = tokenized["input_ids"].copy()
+        return tokenized
     
-    # SFTTrainer - use only parameters that work across TRL versions
-    # max_seq_length and other params may vary by version, so use minimal set
-    trainer_kwargs = {
-        "model": model,
-        "train_dataset": train_dataset,
-        "eval_dataset": val_dataset,
-        "args": training_args,
-        "dataset_text_field": "text",
-    }
+    train_dataset = train_dataset.map(
+        tokenize_function,
+        batched=True,
+        remove_columns=["text"],
+    )
+    if val_dataset:
+        val_dataset = val_dataset.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=["text"],
+        )
     
-    # Try adding max_seq_length if supported
-    import inspect
-    sig = inspect.signature(SFTTrainer.__init__)
-    if "max_seq_length" in sig.parameters:
-        trainer_kwargs["max_seq_length"] = max_seq_length
-    elif "max_length" in sig.parameters:
-        trainer_kwargs["max_length"] = max_seq_length
+    # Use standard Trainer instead of SFTTrainer for better compatibility
+    # Since we've already tokenized, we can use the regular Trainer
+    from transformers import Trainer
     
-    trainer = SFTTrainer(**trainer_kwargs)
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+    )
     
     # Train
     print("\nStarting training...")
