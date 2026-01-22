@@ -185,7 +185,6 @@ def main():
         optim="paged_adamw_8bit",  # Memory-efficient optimizer
         report_to="tensorboard",
         remove_unused_columns=False,
-        max_length=max_seq_length,  # Add max_length to TrainingArguments
     )
     
     # Create trainer
