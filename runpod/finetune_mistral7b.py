@@ -185,23 +185,34 @@ def main():
         optim="paged_adamw_8bit",  # Memory-efficient optimizer
         report_to="tensorboard",
         remove_unused_columns=False,
+        max_length=max_seq_length,  # Add max_length to TrainingArguments
     )
     
     # Create trainer
-    # In TRL 0.7.0+, tokenizer is inferred from model or passed via model.config
+    # In TRL 0.7.0+, tokenizer is inferred from model
     # Ensure tokenizer is accessible via model
     if not hasattr(model, 'tokenizer'):
         model.tokenizer = tokenizer
     
-    trainer = SFTTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        args=training_args,
-        max_seq_length=max_seq_length,
-        packing=False,  # Don't pack sequences
-        dataset_text_field="text",  # Field name in dataset
-    )
+    # SFTTrainer - use only parameters that work across TRL versions
+    # max_seq_length and other params may vary by version, so use minimal set
+    trainer_kwargs = {
+        "model": model,
+        "train_dataset": train_dataset,
+        "eval_dataset": val_dataset,
+        "args": training_args,
+        "dataset_text_field": "text",
+    }
+    
+    # Try adding max_seq_length if supported
+    import inspect
+    sig = inspect.signature(SFTTrainer.__init__)
+    if "max_seq_length" in sig.parameters:
+        trainer_kwargs["max_seq_length"] = max_seq_length
+    elif "max_length" in sig.parameters:
+        trainer_kwargs["max_length"] = max_seq_length
+    
+    trainer = SFTTrainer(**trainer_kwargs)
     
     # Train
     print("\nStarting training...")
