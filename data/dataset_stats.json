@@ -1,0 +1,10 @@
+{
+  "total_examples": 5200,
+  "train_examples": 4680,
+  "val_examples": 520,
+  "sources": [
+    "pgmvs",
+    "lrmvs",
+    "cics-api-reference"
+  ]
+}

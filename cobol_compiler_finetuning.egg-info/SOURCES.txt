@@ -1,0 +1,6 @@
+pyproject.toml
+cobol_compiler_finetuning.egg-info/PKG-INFO
+cobol_compiler_finetuning.egg-info/SOURCES.txt
+cobol_compiler_finetuning.egg-info/dependency_links.txt
+cobol_compiler_finetuning.egg-info/requires.txt
+cobol_compiler_finetuning.egg-info/top_level.txt
