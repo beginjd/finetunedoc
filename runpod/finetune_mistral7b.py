@@ -55,6 +55,9 @@ def load_model_and_tokenizer(model_name: str = "mistralai/Mistral-7B-Instruct-v0
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
+    # Attach tokenizer to model for SFTTrainer compatibility
+    model.tokenizer = tokenizer
+    
     return model, tokenizer
 
 
@@ -185,14 +188,19 @@ def main():
     )
     
     # Create trainer
+    # In TRL 0.7.0+, tokenizer is inferred from model or passed via model.config
+    # Ensure tokenizer is accessible via model
+    if not hasattr(model, 'tokenizer'):
+        model.tokenizer = tokenizer
+    
     trainer = SFTTrainer(
         model=model,
-        args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        tokenizer=tokenizer,
+        args=training_args,
         max_seq_length=max_seq_length,
         packing=False,  # Don't pack sequences
+        dataset_text_field="text",  # Field name in dataset
     )
     
     # Train

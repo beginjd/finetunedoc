@@ -9,6 +9,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.pdf
 
 # Data files - uncomment to ignore dataset files
 # data/
