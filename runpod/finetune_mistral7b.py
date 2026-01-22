@@ -19,6 +19,19 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer
 from datasets import load_dataset
 
+# Fix PyTorch checkpoint warning: explicitly set use_reentrant parameter
+# This prevents warnings about use_reentrant parameter in PyTorch 2.9+
+import torch.utils.checkpoint as checkpoint_module
+_original_checkpoint = checkpoint_module.checkpoint
+
+def _patched_checkpoint(function, *args, use_reentrant=None, **kwargs):
+    """Patched checkpoint that defaults use_reentrant=False if not specified."""
+    if use_reentrant is None:
+        use_reentrant = False
+    return _original_checkpoint(function, *args, use_reentrant=use_reentrant, **kwargs)
+
+checkpoint_module.checkpoint = _patched_checkpoint
+
 
 def load_model_and_tokenizer(model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"):
     """Load model with 4-bit quantization and tokenizer."""
@@ -185,6 +198,7 @@ def main():
         optim="paged_adamw_8bit",  # Memory-efficient optimizer
         report_to="tensorboard",
         remove_unused_columns=False,
+        gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
     )
     
     # Create trainer
