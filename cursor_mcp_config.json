@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "cobol-compiler-assistant": {
+      "command": "/home/jdbegin/bar/docs/.venv/bin/python",
+      "args": ["-m", "mcp_server"],
+      "env": {
+        "MODEL_PATH": "/home/jdbegin/bar/docs/models/mistral-7b-cobol",
+        "BASE_MODEL": "mistralai/Mistral-7B-Instruct-v0.3",
+        "MAX_TOKENS": "512",
+        "TEMPERATURE": "0.7",
+        "PYTHONPATH": "/home/jdbegin/bar/docs"
+      }
+    }
+  }
+}

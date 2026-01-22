@@ -1,0 +1,15 @@
+# MCP Server dependencies
+
+# MCP framework
+fastmcp>=0.9.0
+
+# Model loading (direct mode)
+torch>=2.0.0
+transformers>=4.35.0
+peft>=0.6.0
+bitsandbytes>=0.41.0
+accelerate>=0.24.0
+
+# Tokenization
+sentencepiece>=0.1.99
+protobuf>=3.20.0
