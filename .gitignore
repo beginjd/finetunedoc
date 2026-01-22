@@ -1,0 +1,38 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Data files - uncomment to ignore dataset files
+# data/
+# *.json
+# *.jsonl
+
+# But keep extracted JSON files ignored (they're large)
+data/extracted/
+
+# Model files
+models/
+*.bin
+*.safetensors
+*.gguf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

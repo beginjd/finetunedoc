@@ -1,0 +1,8 @@
+# Requirements for Phase 1: PDF Extraction and Dataset Preparation
+
+# PDF processing
+pymupdf>=1.23.0  # PyMuPDF for text extraction
+pdfplumber>=0.10.0  # For table extraction
+
+# Data processing
+# (json is built-in, no need to install)
