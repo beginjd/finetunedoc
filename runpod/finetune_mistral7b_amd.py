@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""
+Fine-tune Mistral 7B on COBOL documentation using QLoRA (4-bit quantization + LoRA).
+Optimized for RunPod AMD MI300X GPU instances with ROCm.
+"""
+
+import os
+import json
+import subprocess
+import torch
+from pathlib import Path
+from datetime import datetime
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TrainingArguments,
+    BitsAndBytesConfig,
+)
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from datasets import load_dataset
+
+# Fix PyTorch checkpoint warning: explicitly set use_reentrant parameter
+# This prevents warnings about use_reentrant parameter in PyTorch 2.9+
+import torch.utils.checkpoint as checkpoint_module
+_original_checkpoint = checkpoint_module.checkpoint
+
+def _patched_checkpoint(function, *args, use_reentrant=None, **kwargs):
+    """Patched checkpoint that defaults use_reentrant=False if not specified."""
+    if use_reentrant is None:
+        use_reentrant = False
+    return _original_checkpoint(function, *args, use_reentrant=use_reentrant, **kwargs)
+
+checkpoint_module.checkpoint = _patched_checkpoint
+
+
+def check_rocm_availability():
+    """Check if ROCm is available and working."""
+    print("Checking ROCm availability...")
+    
+    # PyTorch ROCm still uses torch.cuda API for compatibility
+    if not torch.cuda.is_available():
+        raise RuntimeError("ROCm/CUDA not available. PyTorch cannot detect GPU.")
+    
+    print(f"✓ PyTorch detects {torch.cuda.device_count()} GPU(s)")
+    for i in range(torch.cuda.device_count()):
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+    
+    # Try to check ROCm version if rocm-smi is available
+    try:
+        result = subprocess.run(
+            ["rocm-smi", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            print(f"✓ ROCm detected: {result.stdout.strip()}")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("  (rocm-smi not available, but PyTorch ROCm is working)")
+    
+    # Check if we're using ROCm backend
+    if hasattr(torch.version, 'hip'):
+        print(f"✓ PyTorch built with ROCm/HIP support")
+        if torch.version.hip:
+            print(f"  HIP version: {torch.version.hip}")
+    
+    return True
+
+
+def load_model_and_tokenizer(model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"):
+    """Load model with 4-bit quantization and tokenizer."""
+    print(f"Loading model: {model_name}")
+    
+    # 4-bit quantization config for QLoRA
+    # bitsandbytes ROCm support works the same way as CUDA
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    
+    # Load model with quantization
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    
+    # Prepare model for k-bit training
+    model = prepare_model_for_kbit_training(model)
+    
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        padding_side="right",
+    )
+    
+    # Set pad token if not set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    # Attach tokenizer to model for compatibility
+    model.tokenizer = tokenizer
+    
+    return model, tokenizer
+
+
+def setup_lora(model):
+    """Configure and apply LoRA adapters."""
+    print("Setting up LoRA adapters...")
+    
+    lora_config = LoraConfig(
+        r=16,  # Rank - lower = fewer parameters, higher = more capacity
+        lora_alpha=32,  # Scaling factor
+        target_modules=[
+            "q_proj",
+            "v_proj",
+            "k_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    
+    return model
+
+
+def format_prompt(example):
+    """Format instruction-following examples for Mistral."""
+    instruction = example.get("instruction", "")
+    input_text = example.get("input", "")
+    output = example.get("output", "")
+    
+    # Mistral Instruct format
+    if input_text:
+        prompt = f"<s>[INST] {instruction}\n\n{input_text} [/INST] {output}</s>"
+    else:
+        prompt = f"<s>[INST] {instruction} [/INST] {output}</s>"
+    
+    return {"text": prompt}
+
+
+def load_dataset_from_jsonl(train_file: str, val_file: str = None):
+    """Load dataset from JSONL files."""
+    print(f"Loading training dataset from: {train_file}")
+    
+    train_dataset = load_dataset("json", data_files=train_file, split="train")
+    
+    if val_file and os.path.exists(val_file):
+        print(f"Loading validation dataset from: {val_file}")
+        val_dataset = load_dataset("json", data_files=val_file, split="train")
+    else:
+        print("No validation file found, using train split")
+        val_dataset = None
+    
+    return train_dataset, val_dataset
+
+
+def main():
+    """Main fine-tuning function."""
+    # Verify ROCm availability first
+    check_rocm_availability()
+    
+    # Configuration
+    model_name = os.getenv("MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.3")
+    train_file = os.getenv("TRAIN_FILE", "/workspace/data/cobol_dataset_train.jsonl")
+    val_file = os.getenv("VAL_FILE", "/workspace/data/cobol_dataset_val.jsonl")
+    output_dir = os.getenv("OUTPUT_DIR", "/workspace/models/mistral-7b-cobol")
+    run_name = os.getenv("RUN_NAME", f"mistral-7b-cobol-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+    
+    # Training hyperparameters
+    # MI300X has 192GB VRAM, so we can use larger batch sizes by default
+    num_epochs = int(os.getenv("NUM_EPOCHS", "3"))
+    batch_size = int(os.getenv("BATCH_SIZE", "8"))  # Larger default for MI300X
+    learning_rate = float(os.getenv("LEARNING_RATE", "2e-4"))
+    max_seq_length = int(os.getenv("MAX_SEQ_LENGTH", "2048"))
+    gradient_accumulation_steps = int(os.getenv("GRADIENT_ACCUMULATION_STEPS", "2"))  # Lower since batch is larger
+    
+    print("=" * 60)
+    print("Mistral 7B COBOL Fine-tuning with QLoRA (AMD MI300X)")
+    print("=" * 60)
+    print(f"Model: {model_name}")
+    print(f"Training file: {train_file}")
+    print(f"Validation file: {val_file}")
+    print(f"Output directory: {output_dir}")
+    print(f"Epochs: {num_epochs}")
+    print(f"Batch size: {batch_size} (optimized for MI300X 192GB VRAM)")
+    print(f"Learning rate: {learning_rate}")
+    print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+    print("=" * 60)
+    
+    # Load model and tokenizer
+    model, tokenizer = load_model_and_tokenizer(model_name)
+    
+    # Setup LoRA
+    model = setup_lora(model)
+    
+    # Load dataset
+    train_dataset, val_dataset = load_dataset_from_jsonl(train_file, val_file)
+    
+    # Format prompts
+    print("Formatting prompts...")
+    train_dataset = train_dataset.map(format_prompt, remove_columns=train_dataset.column_names)
+    if val_dataset:
+        val_dataset = val_dataset.map(format_prompt, remove_columns=val_dataset.column_names)
+    
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        run_name=run_name,
+        num_train_epochs=num_epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        lr_scheduler_type="cosine",
+        warmup_steps=100,
+        logging_steps=10,
+        save_steps=500,
+        eval_steps=500 if val_dataset else None,
+        eval_strategy="steps" if val_dataset else "no",
+        save_total_limit=3,
+        load_best_model_at_end=True if val_dataset else False,
+        metric_for_best_model="loss" if val_dataset else None,
+        fp16=False,  # Use bfloat16 instead
+        bf16=True,  # Better for MI300X
+        optim="paged_adamw_8bit",  # Memory-efficient optimizer
+        report_to="tensorboard",
+        remove_unused_columns=False,
+        gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
+    )
+    
+    # Create trainer
+    # Tokenize the dataset first (manual tokenization for better control)
+    print(f"Tokenizing datasets with max_seq_length={max_seq_length}...")
+    def tokenize_function(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=max_seq_length,
+            padding="max_length",
+        )
+        # Add labels for language modeling (labels = input_ids)
+        tokenized["labels"] = tokenized["input_ids"].copy()
+        return tokenized
+    
+    train_dataset = train_dataset.map(
+        tokenize_function,
+        batched=True,
+        remove_columns=["text"],
+    )
+    if val_dataset:
+        val_dataset = val_dataset.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=["text"],
+        )
+    
+    # Use standard Trainer (since we've already tokenized manually)
+    from transformers import Trainer
+    
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+    )
+    
+    # Train
+    print("\nStarting training...")
+    trainer.train()
+    
+    # Save final model
+    print(f"\nSaving model to {output_dir}...")
+    trainer.save_model()
+    tokenizer.save_pretrained(output_dir)
+    
+    # Save training config
+    config = {
+        "model_name": model_name,
+        "base_model": model_name,
+        "platform": "AMD MI300X (ROCm)",
+        "training_args": {
+            "num_epochs": num_epochs,
+            "batch_size": batch_size,
+            "learning_rate": learning_rate,
+            "max_seq_length": max_seq_length,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+        },
+        "lora_config": {
+            "r": 16,
+            "lora_alpha": 32,
+            "lora_dropout": 0.05,
+        },
+        "quantization": "4-bit NF4 (bitsandbytes ROCm)",
+        "train_file": train_file,
+        "val_file": val_file,
+    }
+    
+    with open(f"{output_dir}/training_config.json", "w") as f:
+        json.dump(config, f, indent=2)
+    
+    print("\nTraining complete!")
+    print(f"Model saved to: {output_dir}")
+    print(f"To use this model, load the base model and apply the LoRA adapters from: {output_dir}")
+
+
+if __name__ == "__main__":
+    main()
